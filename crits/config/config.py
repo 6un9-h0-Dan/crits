@@ -50,7 +50,7 @@ class CRITsConfig(CritsDocument, Document):
     ldap_usercn = StringField(default='')
     ldap_userdn = StringField(default='')
     ldap_update_on_login = BooleanField(default=False)
-    log_directory = StringField(default=os.path.join(settings.SITE_ROOT, 'logs'))
+    log_directory = StringField(default=os.path.join(settings.SITE_ROOT, '..', 'logs'))
     log_level = StringField(default='INFO')
     password_complexity_desc = StringField(default='8 characters, at least 1 capital, 1 lowercase and 1 number/special')
     password_complexity_regex = StringField(default='(?=^.{8,}$)((?=.*\d)|(?=.*\W+))(?![.\n])(?=.*[A-Z])(?=.*[a-z]).*$')
@@ -70,7 +70,8 @@ class CRITsConfig(CritsDocument, Document):
     total_max = IntField(default=250)
     totp_web = StringField(default='Disabled')
     totp_cli = StringField(default='Disabled')
-    zip7_path = StringField(default='/usr/bin/7za')
+    zip7_path = StringField(default='/usr/bin/7z')
+    zip7_password = StringField(default='infected')
 
     def migrate(self):
         """

@@ -237,6 +237,13 @@ function editUser(user) {
     $( "#add-new-user-form" ).dialog( "open" );
 }
 
+function editAction(action) {
+    var me = $("#add-new-action-form input[name='action']");
+    me.val(action);
+    me.change();
+    $("#add-new-action-form").dialog("open");
+}
+
 function toggleItemActive(coll, oid) {
     var me = $( "a#is_active_" + oid);
     $.ajax({
@@ -332,6 +339,23 @@ function delete_notification_click(e) {
         success: function(data) {
             if (data.success) {
                 elem.parent().parent().remove();
+            }
+        }
+    });
+}
+
+function toggle_preferred_action_from_jtable(e) {
+    e.preventDefault();
+    var me = $(e.currentTarget);
+    var obj_id = me.attr('data-id');
+    var obj_type = me.attr('data-type');
+    $.ajax({
+        type: "POST",
+        data: {'obj_type': obj_type, 'obj_id': obj_id},
+        url: add_preferred_actions,
+        success: function(data) {
+            if (data.success == false) {
+                error_message_dialog("Error", data.message);
             }
         }
     });
@@ -554,6 +578,9 @@ function jtRecordsLoaded(event,data, button) {
 
     // Also add an attribute for the data type.
     $(jtable).find('.favorites_icon_jtable').attr('data-type', data.serverResponse.crits_type);
+
+    // Also add an attribute for the data type to the actions button
+    $(jtable).find('.preferred_actions_jtable').attr('data-type', data.serverResponse.crits_type);
 }
 
 function link_jtable_column (data, column, baseurl, campbase) {
@@ -646,8 +673,70 @@ function initTabNav() {
     });
 }
 
+var csrftoken = readCookie('csrftoken');
+function csrfSafeMethod(method) {
+    // these HTTP methods do not require CSRF protection
+    return (/^(GET|HEAD|OPTIONS|TRACE)$/.test(method));
+}
+$.ajaxSetup({
+    // Set request header for ajax POST
+    beforeSend: function(xhr, settings) {
+        if (!csrfSafeMethod(settings.type) && !this.crossDomain) {
+            xhr.setRequestHeader("X-CSRFToken", csrftoken);
+        }
+    }
+});
+
+var selected_text = null;
+
+function getSelected() {
+    if (window.getSelection) {
+        return window.getSelection();
+    } else if (document.getSelection) {
+        return document.getSelection();
+    } else {
+        var selection = document.selection && document.selection.createRange();
+        if (selection.text) {
+            return selection.text;
+        }
+        return false;
+    }
+    return false;
+}
 
 $(document).ready(function() {
+
+    $(document).mouseup(function(e) {
+        var selected = getSelected();
+        if (selected.toString().length > 0) {
+            selected_text = selected.toString()
+            var span = $('<span>')
+            .attr('id', 'tmpSelectedNode');
+            var range = selected.getRangeAt(0);
+            range.insertNode($(span).get(0));
+            var position = $('#tmpSelectedNode').position();
+            var fspan = $('#selectedNodeMenu')
+            .css('top', position.top)
+            .css('left', position.left)
+            .attr('data-selected', selected_text)
+            .show();
+            $('#tmpSelectedNode').remove();
+        } else {
+            $('#selectedNodeMenu').hide();
+        }
+    });
+
+    $(document).on('click', '.selected_text_button', function(e) {
+        var selected = $(this).parent().attr('data-selected');
+        if ($(this).attr('id') == 'selected_to_indicator') {
+            $('#new-indicator').click();
+        } else if ($(this).attr('id') == 'selected_to_domain') {
+            $('#new-domain').click();
+        } else if ($(this).attr('id') == 'selected_to_ip') {
+            $('#new-ip').click();
+        }
+    });
+
     var src_filter = '[name!="analyst"]';
 
     // Enable Preference Toggle buttons
@@ -689,6 +778,11 @@ $(document).ready(function() {
     //bind remove_favorite click
     $(document).on('click', '.remove_favorite', function(e) {
         remove_favorite(e);
+    });
+
+    // bind the preferred actions from jtable.
+    $(document).on('click', '.preferred_actions_jtable', function(e) {
+        toggle_preferred_action_from_jtable(e);
     });
     //setup source "accordion" effect
     //  toggle on arrow icon
@@ -1010,6 +1104,46 @@ $(document).ready(function() {
         },
         close: function() {
                         $(":input", "#form-add-new-user").each(function() {
+                                $(this).val('');
+                        });
+        },
+    });
+
+    $("#form-add-new-action").off().submit(function(e) {
+        e.preventDefault();
+        var result = $(this).serialize();
+        $.ajax({
+            type: "POST",
+            url: new_action,
+            data: result,
+            datatype: 'json',
+            success: function(data) {
+                $("#form-add-new-action-results").show().css('display', 'table');
+                $("#form-add-new-action-results").html(data.message);
+                if (data.form) {
+                   $('#form-add-new-action').children('table').contents().replaceWith($(data.form));
+                }
+            }
+        });
+    });
+    $( "#add-new-action-form" ).dialog({
+        autoOpen: false,
+        modal: true,
+        width: "auto",
+        height: "auto",
+        buttons: {
+            "Add/Edit Action": function(e) {
+                $("#form-add-new-action").submit();
+            },
+            "Cancel": function() {
+                $(":input", "#form-add-new-action").each(function() {
+                    $(this).val('');
+                });
+                $( this ).dialog( "close" );
+            },
+        },
+        close: function() {
+                        $(":input", "#form-add-new-action").each(function() {
                                 $(this).val('');
                         });
         },
@@ -1395,4 +1529,5 @@ $(document).ready(function() {
             }
         });
     });
+
 }); //document.ready

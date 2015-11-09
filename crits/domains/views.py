@@ -1,9 +1,7 @@
 import urllib
 import json
-import datetime
 
 from django.http import HttpResponse, HttpResponseRedirect
-from django.conf import settings
 from django.contrib.auth.decorators import user_passes_test
 from django.core.urlresolvers import reverse
 from django.shortcuts import render_to_response
@@ -15,12 +13,11 @@ from crits.core.data_tools import json_handler
 from crits.core.handsontable_tools import form_to_dict
 from crits.core.user_tools import user_can_view_data
 from crits.domains.forms import TLDUpdateForm, AddDomainForm
-from crits.domains.handlers import get_domain, edit_domain_name
+from crits.domains.handlers import edit_domain_name
 from crits.domains.handlers import add_new_domain, get_domain_details
 from crits.domains.handlers import update_tlds, generate_domain_jtable
 from crits.domains.handlers import generate_domain_csv, process_bulk_add_domain
 from crits.objects.forms import AddObjectForm
-from crits.core.handlers import get_object_types
 
 
 @user_passes_test(user_can_view_data)
@@ -63,12 +60,6 @@ def bulk_add_domain(request):
             also contain helpful status messages about each operation.
     """
 
-    all_obj_type_choices = [(c[0],
-                            c[0],
-                            {'datatype':c[1].keys()[0],
-                            'datatype_value':c[1].values()[0]}
-                            ) for c in get_object_types(False)]
-
     formdict = form_to_dict(AddDomainForm(request.user))
 
     if request.method == "POST" and request.is_ajax():
@@ -78,7 +69,7 @@ def bulk_add_domain(request):
                             default=json_handler),
                             mimetype='application/json')
     else:
-        objectformdict = form_to_dict(AddObjectForm(request.user, all_obj_type_choices))
+        objectformdict = form_to_dict(AddObjectForm(request.user))
 
         return render_to_response('bulk_add_default.html',
                                  {'formdict': formdict,
@@ -122,21 +113,28 @@ def add_domain(request):
         retVal = {}
         errors = []
         if add_form.is_valid():
-            #form is valid, but we may still have post-validation errors
-            errors = add_form._errors.setdefault("domain", ErrorList())
+            errors = []
             data = add_form.cleaned_data
             (result, errors, retVal) = add_new_domain(data,
-                                              request,
-                                              errors)
-        if not result:
-            retVal['form'] = add_form.as_table()
+                                                      request,
+                                                      errors)
         if errors:
             if not 'message' in retVal:
                 retVal['message'] = ""
             elif not isinstance(retVal['message'], str):
                 retVal['message'] = str(retVal['message'])
             for e in errors:
+                if 'Domain' in e or 'TLD' in e:
+                    dom_form_error = add_form._errors.setdefault("domain",
+                                                                 ErrorList())
+                    dom_form_error.append('Invalid Domain')
+                elif 'IP' in e:
+                    ip_form_error = add_form._errors.setdefault("ip",
+                                                                ErrorList())
+                    ip_form_error.append('Invalid IP')
                 retVal['message'] += '<div>' + str(e) + '</div>'
+        if not result:
+            retVal['form'] = add_form.as_table()
         retVal['success'] = result
         return HttpResponse(json.dumps(retVal,
                                        default=json_handler),
@@ -161,8 +159,7 @@ def edit_domain(request, domain):
     if request.method == "POST" and request.is_ajax():
         new_name = request.POST.get('value')
         analyst = request.user.username
-        if get_domain(new_name)[0] != 'no_tld_found_error':
-            edit_domain_name(domain, new_name, analyst)
+        if edit_domain_name(domain, new_name, analyst):
             return HttpResponse(new_name)
         else:
             return HttpResponse(domain)

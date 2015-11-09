@@ -119,6 +119,8 @@ function delete_object_click(e, item_type, del_label, data) {
     var fn = (function(e) {
         return function() {
         var form = "<form method='POST' action='" + action + "'>";
+        var csrftoken = readCookie('csrftoken');
+        form = form + "<input type='hidden' name='csrfmiddlewaretoken' value='" + csrftoken + "'>"
         $.each(data, function(k,v) { form = form + $("input").attr("type","hidden").attr("name",k).val(v).html(); } );
         form = form + "</form>";
         $(form).appendTo("body").submit();
@@ -443,7 +445,11 @@ function preference_toggle(e) {
 function defaultSubmit(e) {
     var dialog = $(e.currentTarget).closest(".ui-dialog").find(".ui-dialog-content");
     var form = dialog.find('form');
-
+    var csrftoken = readCookie('csrftoken');
+    var input = $("<input>")
+               .attr("type", "hidden")
+               .attr("name", "csrfmiddlewaretoken").val(csrftoken);
+    form.append($(input));
     form.submit();
 }
 
@@ -499,8 +505,8 @@ function update_dialog(e) {
     // pre-populate form
     inputs.each(function(index) {
         var input = $(this);
-    var field = input.attr('name');
-    var value;
+        var field = input.attr('name');
+        var value;
 
         // map input to table cell with "data-field" (changed from class) matching input name
         // first look at the top level
@@ -891,6 +897,22 @@ function releasability_add_submit(e) {
         });
 }
 
+function check_selected(type, dialog) {
+    if (selected_text) {
+        var obj = null;
+        if (type == 'ip') {
+            obj = '#id_ip';
+        } else if (type == 'domain') {
+            obj = '#id_domain';
+        } else if (type == 'indicator') {
+            obj = '#id_value';
+        }
+        if (obj) {
+            dialog.find(obj).val(selected_text);
+            selected_text = null;
+        }
+    }
+}
 
 function new_ip_dialog(e) {
     var dialog = $(this).find("form");
@@ -904,6 +926,9 @@ function new_ip_dialog(e) {
             ref.hide();
         }
         }).trigger('change');
+
+    // If there is selected text, default the value in the form
+    check_selected('ip', dialog);
 }
 
 function new_domain_dialog(e) {
@@ -948,6 +973,10 @@ function new_domain_dialog(e) {
 
     //reinitialize ip date field (since this function can be called after page load)
     createPickers();
+
+    // If there is selected text, default the value in the form
+    check_selected('domain', dialog);
+
 }
 
 function new_event_dialog() {
@@ -988,7 +1017,8 @@ function new_indicator_dialog(e) {
     var dialog = $("#dialog-new-indicator").closest(".ui-dialog");
     var form = dialog.find("form");
 
-    add_more_object_types_button(form, 'no_file');
+    // If there is selected text, default the value in the form
+    check_selected('indicator', dialog);
 }
 
 // We may want to do something like this generally, but for now just doing it for single text entry form
@@ -1019,6 +1049,18 @@ function new_sample_dialog() {
     }
 }
 
+function new_target_dialog() {
+    var element = document.getElementById('id_campaign');
+    var className = $(this).dialog("activatedBy")[0].className
+    if (className === "ui-icon ui-icon-plusthick add dialogClick") {
+        var campaign = this.baseURI.match(/\/campaigns\/details\/(.*)\//);
+        element.value = decodeURI(campaign[1]);
+    }
+    else {
+        element.value = '';
+    }
+}
+
 /// Standard Dialog setup below
 
 var stdDialogs = {
@@ -1030,6 +1072,8 @@ var stdDialogs = {
       "new-email-yaml": {title: "Email (YAML)", open: new_email_yaml_dialog},
 
       "new-campaign": {title: "Campaign"},
+      "new-backdoor": {title: "Backdoor"},
+      "new-exploit": {title: "Exploit"},
 
       "new-domain": {title: "Domain", open: new_domain_dialog},
       "new-indicator": {title: "Indicator", open: new_indicator_dialog},
@@ -1041,10 +1085,8 @@ var stdDialogs = {
       "new-raw-data": {title: "Raw Data" },
       "raw_data_type_add": {title: "Raw Data Type"},
 
-      "new-target": {title: "Target"},
+      "new-target": {title: "Target", open: new_target_dialog },
 
-      "backdoor_add": {title: "Backdoor"},
-      "exploit_add": {title: "Exploit"},
       "source_create": {title: "Source"},
       "user_role": {title: "User Role"},
 
@@ -1054,6 +1096,7 @@ var stdDialogs = {
                   addEditSubmit)
       }
       },
+      "location-add": {title: "Add Location"},
       "ticket": {title: "Ticket",
          update: { open: update_dialog} },
 
@@ -1075,7 +1118,6 @@ var stdDialogs = {
 
   var fileDialogs = {
       // File Upload Dialogs
-      "new-standards": {title: "STIX Document"},
       "new-email-outlook": {title: "Upload Outlook Email" },
       "new-email-eml": {title: "Email" },
       "new-pcap": {title: "PCAP", personas: {related: newPersona("Upload Related PCAP",
@@ -1098,8 +1140,8 @@ var stdDialogs = {
   $.each(fileDialogs, function(id,opt) {
       stdDialog(id, opt, {
           new: { open: file_upload_dialog, submit: defaultSubmit }}
-          )
-          });
+      )
+  });
 
   // New Sample dialog has some additional setup, so add that as an event callback
   $("#dialog-new-sample").on("dialogopen", new_sample_dialog);
@@ -1111,7 +1153,7 @@ var stdDialogs = {
   // action to the form's submit action by default, but I don't want
   // to make that sort of global change before 3.0.
   var singleInputDialogs = "#dialog-actor-identifier-type,#dialog-ticket,"+
-      "#dialog-backdoor_add,#dialog-source_create,#dialog-user_role,#dialog-exploit_add," +
+      "#dialog-source_create,#dialog-user_role," +
       "#dialog-indicator_action_add,#dialog-raw_data_type_add";
   $(singleInputDialogs).on("dialogopen", fix_form_submit(addEditSubmit));
 
@@ -1141,16 +1183,6 @@ var stdDialogs = {
 
 
   $("#dialog-new-indicator").on("dialogcreate", new_indicator_dialog);
-
-  $(document).on('change', "#id_rst_fmt", function(e) {
-      if (this.value == 'stix') {
-          console.log("disable");
-          $("#id_bin_fmt").val("base64").prop("disabled", true);
-      } else {
-          console.log("enable");
-          $("#id_bin_fmt").prop("disabled", false);
-      }
-  });
 
   // Releasability has plus instance and delete buttons that use same callback
   $(document).on('click', '.add_releasability_instance_button',

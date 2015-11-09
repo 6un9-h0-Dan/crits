@@ -7,8 +7,6 @@ from django.core.management.base import BaseCommand
 from crits.config.config import CRITsConfig
 from crits.core.mongo_tools import mongo_update, mongo_remove, mongo_connector
 
-from create_sectors import add_sector_objects
-
 
 
 logger = logging.getLogger(__name__)
@@ -151,40 +149,14 @@ def prep_notifications():
     query = {"type": "notification"}
     mongo_remove(settings.COL_COMMENTS, query)
 
-def prep_sectors():
-
-    add_sector_objects()
-
 def prep_indexes():
     """
     Update indexing.
     """
 
-    notifications = mongo_connector(settings.COL_NOTIFICATIONS)
-    # auto-expire notifications after 30 days
-    notifications.ensure_index("obj_id", background=True,
-                               expireAfterSeconds=2592000)
-    notifications.ensure_index("users", background=True)
-    print "Notification indexes created."
-    screenshots = mongo_connector(settings.COL_SCREENSHOTS)
-    screenshots.ensure_index("tags", background=True)
-    print "Screenshot indexes created."
-
-    # check for old invalid chunk indexes and fix
-    for col in ("%s.chunks" % settings.COL_OBJECTS,
-                "%s.chunks" % settings.COL_PCAPS,
-                "%s.chunks" % settings.COL_SAMPLES):
-        c = mongo_connector(col)
-        d = c.index_information()
-        if d.get('files_id_1_n_1', False):
-            b = d['files_id_1_n_1'].get('background', None)
-            # background could be set to False or True in the DB
-            if b is not None:
-                c.drop_index("files_id_1_n_1")
-                c.ensure_index([("files_id", pymongo.ASCENDING),
-                                ("n", pymongo.ASCENDING)],
-                               unique=True)
-                print "Found bad index for %s. Fixed it." % col
+    # Create default indexes.
+    from create_indexes import create_indexes
+    create_indexes()
 
 def update_database_version():
 
@@ -198,7 +170,6 @@ def prep_database():
     """
 
     prep_notifications()
-    prep_sectors()
     prep_indexes()
     update_database_version()
     return

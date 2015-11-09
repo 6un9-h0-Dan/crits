@@ -29,7 +29,7 @@ from crits.core.crits_mongoengine import CritsSourceDocument
 from crits.core.source_access import SourceAccess
 from crits.core.data_tools import create_zip, format_file
 from crits.core.mongo_tools import mongo_connector, get_file
-from crits.core.sector import Sector, SectorObject
+from crits.core.sector import Sector
 from crits.core.user import CRITsUser, EmbeddedSubscriptions
 from crits.core.user import EmbeddedLoginAttempt
 from crits.core.user_tools import user_sources, is_admin
@@ -37,11 +37,13 @@ from crits.core.user_tools import save_user_secret
 from crits.core.user_tools import get_user_email_notification
 
 from crits.actors.actor import Actor
+from crits.backdoors.backdoor import Backdoor
 from crits.campaigns.campaign import Campaign
 from crits.certificates.certificate import Certificate
 from crits.comments.comment import Comment
 from crits.domains.domain import Domain
 from crits.events.event import Event
+from crits.exploits.exploit import Exploit
 from crits.ips.ip import IP
 from crits.notifications.handlers import get_user_notifications, generate_audit_notification
 from crits.pcaps.pcap import PCAP
@@ -50,12 +52,50 @@ from crits.emails.email import Email
 from crits.samples.sample import Sample
 from crits.screenshots.screenshot import Screenshot
 from crits.targets.target import Target
-from crits.indicators.indicator import Indicator
+from crits.indicators.indicator import Indicator, IndicatorAction
 
 from crits.core.totp import valid_totp
 
 
 logger = logging.getLogger(__name__)
+
+def description_update(type_, id_, description, analyst):
+    """
+    Change the description of a top-level object.
+
+    :param type_: The CRITs type of the top-level object.
+    :type type_: str
+    :param id_: The ObjectId to search for.
+    :type id_: str
+    :param description: The description to use.
+    :type description: str
+    :param analyst: The user setting the description.
+    :type analyst: str
+    :returns: dict with keys "success" (boolean) and "message" (str)
+    """
+
+    klass = class_from_type(type_)
+    if not klass:
+        return {'success': False, 'message': 'Could not find object.'}
+
+    if hasattr(klass, 'source'):
+        sources = user_sources(analyst)
+        obj = klass.objects(id=id_, source__name__in=sources).first()
+    else:
+        obj = klass.objects(id=id_).first()
+    if not obj:
+        return {'success': False, 'message': 'Could not find object.'}
+
+    # Have to unescape the submitted data. Use unescape() to escape
+    # &lt; and friends. Use urllib2.unquote() to escape %3C and friends.
+    h = HTMLParser.HTMLParser()
+    description = h.unescape(description)
+    try:
+        obj.description = description
+        obj.save(username=analyst)
+        return {'success': True, 'message': "Description set."}
+    except ValidationError, e:
+        return {'success': False, 'message': e}
 
 def get_favorites(analyst):
     """
@@ -76,12 +116,14 @@ def get_favorites(analyst):
 
     field_dict = {
         'Actor': 'name',
+        'Backdoor': 'name',
         'Campaign': 'name',
         'Certificate': 'filename',
         'Comment': 'object_id',
         'Domain': 'domain',
         'Email': 'id',
         'Event': 'title',
+        'Exploit': 'name',
         'Indicator': 'id',
         'IP': 'ip',
         'PCAP': 'filename',
@@ -183,11 +225,13 @@ def get_data_for_item(item_type, item_id):
 
     type_to_fields = {
         'Actor': ['name', ],
+        'Backdoor': ['name', ],
         'Campaign': ['name', ],
         'Certificate': ['filename', ],
         'Domain': ['domain', ],
         'Email': ['from_address', 'date', ],
         'Event': ['title', 'event_type', ],
+        'Exploit': ['name', 'cve', ],
         'Indicator': ['value', 'ind_type', ],
         'IP': ['ip', 'type', ],
         'PCAP': ['filename', ],
@@ -220,7 +264,7 @@ def get_data_for_item(item_type, item_id):
             response['data'][field.title()] = value
     return response
 
-def add_releasability(type_, _id, name, analyst):
+def add_releasability(type_, id_, name, user, **kwargs):
     """
     Add releasability to a top-level object.
 
@@ -230,18 +274,18 @@ def add_releasability(type_, _id, name, analyst):
     :type id_: str
     :param name: The source to add releasability for.
     :type name: str
-    :param analyst: The user adding the releasability.
-    :type analyst: str
+    :param user: The user adding the releasability.
+    :type user: str
     :returns: dict with keys "success" (boolean) and "message" (str)
     """
 
-    obj = class_from_id(type_, _id)
+    obj = class_from_id(type_, id_)
     if not obj:
         return {'success': False,
                 'message': "Could not find object."}
     try:
-        obj.add_releasability(name=name, analyst=analyst, instances=[])
-        obj.save(username=analyst)
+        obj.add_releasability(name=name, analyst=user, instances=[])
+        obj.save(username=user)
         obj.reload()
         return {'success': True,
                 'obj': obj.to_dict()['releasability']}
@@ -445,8 +489,8 @@ def merge_source_lists(left, right):
                 left.append(src)
     return left
 
-def source_add_update(obj_type, obj_id, action, source, method=None,
-                      reference=None, date=None, analyst=None):
+def source_add_update(obj_type, obj_id, action, source, method='',
+                      reference='', date=None, analyst=None):
     """
     Add or update a source for a top-level object.
 
@@ -571,33 +615,6 @@ def source_remove_all(obj_type, obj_id, name, analyst=None):
         return result
     except ValidationError, e:
         return {'success':False, 'message': e}
-
-def get_object_types(active=True, query=None):
-    """
-    Get a list of available ObjectTypes in CRITs sorted alphabetically.
-
-    :param active: Whether or not the ObjectTypes returned should be active.
-    :type active: boolean
-    :param query: Custom query to use by default.
-    :type query: dict
-    :returns: list
-    """
-
-    from crits.objects.object_type import ObjectType
-    if query is None:
-        query = {}
-    if active:
-        query['active'] = "on"
-    result = ObjectType.objects(__raw__=query)
-    object_types = []
-    for r in result:
-        if r.name == r.object_type:
-            object_types.append((r.name, r.datatype))
-        else:
-            object_types.append(("%s - %s" % (r.object_type, r.name),
-                                 r.datatype))
-    object_types.sort()
-    return object_types
 
 def get_sources(obj_type, obj_id, analyst):
     """
@@ -749,11 +766,13 @@ def alter_bucket_list(obj, buckets, val):
         if val == -1:
             Bucket.objects(name=name,
                            Actor=0,
+                           Backdoor=0,
                            Campaign=0,
                            Certificate=0,
                            Domain=0,
                            Email=0,
                            Event=0,
+                           Exploit=0,
                            Indicator=0,
                            IP=0,
                            PCAP=0,
@@ -792,11 +811,13 @@ def generate_bucket_jtable(request, option):
                                     request,
                                     includes=['name',
                                               'Actor',
+                                              'Backdoor',
                                               'Campaign',
                                               'Certificate',
                                               'Domain',
                                               'Email',
                                               'Event',
+                                              'Exploit',
                                               'Indicator',
                                               'IP',
                                               'PCAP',
@@ -806,9 +827,9 @@ def generate_bucket_jtable(request, option):
         return HttpResponse(json.dumps(response, default=json_handler),
                             content_type='application/json')
 
-    fields = ['name', 'Actor', 'Campaign', 'Certificate', 'Domain', 'Email',
-              'Event', 'Indicator', 'IP', 'PCAP', 'RawData', 'Sample', 'Target',
-              'Promote']
+    fields = ['name', 'Actor', 'Backdoor', 'Campaign', 'Certificate', 'Domain',
+              'Email', 'Event', 'Exploit', 'Indicator', 'IP', 'PCAP', 'RawData',
+              'Sample', 'Target', 'Promote']
     jtopts = {'title': 'Buckets',
               'fields': fields,
               'listurl': 'jtlist',
@@ -836,7 +857,7 @@ def generate_bucket_jtable(request, option):
             if field['fieldname'].startswith("'" + ctype):
                 if ctype == 'name':
                     field['display'] = """ function (data) {
-                    return '<a href="%s&q='+data.record.name+'">' + data.record.name + '</a>';
+                    return '<a href="%s&q='+encodeURIComponent(data.record.name)+'">' + data.record.name + '</a>';
                     }
                     """ % url
                 elif ctype == 'Promote':
@@ -846,12 +867,12 @@ def generate_bucket_jtable(request, option):
                     # has a bucket parameter that is for the name of the
                     # to operate on.
                     field['display'] = """ function (data) {
-            return '<div class="icon-container"><span class="add_button" data-intro="Add a campaign" data-position="right"><a href="#" action="%s?name='+data.record.name+'" class="ui-icon ui-icon-plusthick dialogClick" dialog="campaign-add" persona="promote" title="Promote to campaign"></a></span></div>'
+            return '<div class="icon-container"><span class="add_button" data-intro="Add a campaign" data-position="right"><a href="#" action="%s?name='+encodeURIComponent(data.record.name)+'" class="ui-icon ui-icon-plusthick dialogClick" dialog="campaign-add" persona="promote" title="Promote to campaign"></a></span></div>'
                     }
                     """ % url
                 else:
                     field['display'] = """ function (data) {
-                    return '<a href="%s?bucket_list='+data.record.name+'">'+data.record.%s+'</a>';
+                    return '<a href="%s?bucket_list='+encodeURIComponent(data.record.name)+'">'+data.record.%s+'</a>';
                     }
                     """ % (url, ctype)
     return render_to_response('bucket_lists.html',
@@ -902,8 +923,8 @@ def download_object_handler(total_limit, depth_limit, rel_limit, rst_fmt,
     :param rel_limit: The limit on how many relationhips a top-level object
                       should have before we ignore its relationships.
     :type rel_limit: int
-    :param rst_fmt: The format the results should be in ("zip", "stix",
-                    "stix_no_bin").
+    :param rst_fmt: The format the results should be in ("zip", "json",
+                    "json_no_bin").
     :type rst_fmt: str
     :param object_types: The types of top-level objects to include.
     :type object_types: list
@@ -921,14 +942,14 @@ def download_object_handler(total_limit, depth_limit, rel_limit, rst_fmt,
 
     result = {'success': False}
 
-    stix_docs = []
+    json_docs = []
     to_zip = []
-    need_filedata = rst_fmt != 'stix_no_bin'
+    need_filedata = rst_fmt != 'json_no_bin'
     if not need_filedata:
         bin_fmt = None
 
     # If bin_fmt is not zlib or base64, force it to base64.
-    if rst_fmt == 'stix' and bin_fmt not in ['zlib', 'base64']:
+    if rst_fmt == 'json' and bin_fmt not in ['zlib', 'base64']:
         bin_fmt = 'base64'
 
     for (obj_type, obj_id) in objs:
@@ -955,66 +976,25 @@ def download_object_handler(total_limit, depth_limit, rel_limit, rst_fmt,
                     obj.filedata.seek(0)
             else:
                 try:
-                    stix_docs.append(obj.to_stix(items_to_convert=[obj],
-                                                loaded=True,
-                                                bin_fmt=bin_fmt))
+                    json_docs.append(obj.to_json())
                 except:
-                    # Usually due to the object not being a supported exportable
-                    # object such as Indicators with a type that is not a CybOX
-                    # object.
                     pass
 
-    doc_count = len(stix_docs)
     zip_count = len(to_zip)
-    if doc_count == 1 and zip_count <= 0: # we have a single STIX doc to return
+    if zip_count <= 0:
         result['success'] = True
-        result['data'] = stix_docs[0]['stix_obj'].to_xml()
-        result['filename'] = "%s_%s.xml" % (stix_docs[0]['final_objects'][0]._meta['crits_type'],
-                                            stix_docs[0]['final_objects'][0].id)
-        result['mimetype'] = 'text/xml'
-    elif doc_count + zip_count >= 1: # we have multiple or mixed items to return
-        if not make_zip:
-            # We are making a single STIX document out of our results. Pop any
-            # STIX object out of the list and use it as the "main" STIX object.
-            # TODO: This fails miserably for Events since they are their own
-            # unique STIX document.
-            final_doc = stix_docs.pop()
-            final_doc = final_doc['stix_obj']
-            for doc in stix_docs:
-                doc = doc['stix_obj']
-                # Add any indicators from this doc into the "main" STIX object.
-                if doc.indicators:
-                    if isinstance(doc.indicators, list):
-                        final_doc.indicators.extend(doc.indicators)
-                    else:
-                        final_doc.indicators.append(doc.indicators)
-                # Add any observables from this doc into the "main" STIX object.
-                if doc.observables:
-                    if isinstance(doc.observables.observables, list):
-                        for d in doc.observables.observables:
-                            final_doc.observables.add(d)
-                    else:
-                        final_doc.observables.add(doc.observables)
-                # Add any Actors from this doc into the "main" STIX object.
-                if doc.threat_actors:
-                    if isinstance(doc.threat_actors, list):
-                        final_doc.threat_actors.extend(doc.threat_actors)
-                    else:
-                        final_doc.threat_actors.append(doc.threat_actors)
-            # Convert the "main" STIX object into XML and return.
-            result['success'] = True
-            result['data'] = final_doc.to_xml()
-            result['mimetype'] = 'application/xml'
-        else:
-            zip_data = to_zip
-            for doc in stix_docs:
-                inner_filename = "%s_%s.xml" % (doc['final_objects'][0]._meta['crits_type'],
-                                                doc['final_objects'][0].id)
-                zip_data.append((inner_filename, doc['stix_obj'].to_xml()))
-            result['success'] = True
-            result['data'] = create_zip(zip_data, True)
-            result['filename'] = "CRITS_%s.zip" % datetime.datetime.today().strftime("%Y-%m-%d")
-            result['mimetype'] = 'application/zip'
+        result['data'] = json_docs
+        result['filename'] = "crits.json"
+        result['mimetype'] = 'text/json'
+    else:
+        zip_data = to_zip
+        for doc in json_docs:
+            inner_filename = "%s.xml" % doc['id']
+            zip_data.append((inner_filename, doc))
+        result['success'] = True
+        result['data'] = create_zip(zip_data, True)
+        result['filename'] = "CRITS_%s.zip" % datetime.datetime.today().strftime("%Y-%m-%d")
+        result['mimetype'] = 'application/zip'
     return result
 
 def collect_objects(obj_type, obj_id, depth_limit, total_limit, rel_limit,
@@ -1250,6 +1230,69 @@ def toggle_item_state(type_, oid, analyst):
     except ValidationError:
         return {'success': False}
 
+def do_add_preferred_actions(obj_type, obj_id, username):
+    """
+    Add all preferred actions to an object.
+
+    :param obj_type: The type of object to update.
+    :type obj_type: str
+    :param obj_id: The ObjectId of the object to update.
+    :type obj_id: str
+    :param username: The user adding the preferred actions.
+    :type username: str
+    :returns: dict with keys:
+              "success" (boolean),
+              "message" (str) if failed,
+              "object" (list of dicts) if successful.
+    """
+
+    klass = class_from_type(obj_type)
+    if not klass:
+        return {'success': False, 'message': 'Invalid type'}
+
+    preferred_actions = IndicatorAction.objects(preferred=obj_type)
+    if not preferred_actions:
+        return {'success': False, 'message': 'No preferred actions'}
+
+    sources = user_sources(username)
+    obj = klass.objects(id=obj_id, source__name__in=sources).first()
+    if not obj:
+        return {'success': False, 'message': 'Could not find object'}
+
+    actions = []
+    now = datetime.datetime.now()
+    # Get preferred actions and add them.
+    for a in preferred_actions:
+        action = {'action_type': a.name,
+                  'active': 'on',
+                  'analyst': username,
+                  'begin_date': now,
+                  'end_date': None,
+                  'performed_date': now,
+                  'reason': 'Preferred action toggle',
+                  'date': now}
+        obj.add_action(action['action_type'],
+                             action['active'],
+                             action['analyst'],
+                             action['begin_date'],
+                             action['end_date'],
+                             action['performed_date'],
+                             action['reason'],
+                             action['date'])
+        actions.append(action)
+
+    # Change status to In Progress if it is currently 'New'
+    if obj.status == 'New':
+        obj.set_status('In Progress')
+
+    try:
+        obj.save(username=username)
+    except ValidationError, e:
+        return {'success': False, 'message': e}
+
+    return {'success': True, 'object': actions}
+
+
 def get_item_state(type_, name):
     """
     Get the state of an item.
@@ -1261,16 +1304,7 @@ def get_item_state(type_, name):
     :returns: True if active, False if inactive.
     """
 
-    if type_ == 'RelationshipType':
-        query = {'forward': name}
-    elif type_ == 'ObjectType':
-        a = name.split(" - ")
-        if len(a) == 1:
-            query = {'name': name}
-        else:
-            query = {'type': a[0], 'name': a[1]}
-    else:
-        query = {'name': name}
+    query = {'name': name}
     obj = class_from_type(type_).objects(__raw__=query).first()
     if not obj:
         return False
@@ -1321,13 +1355,20 @@ def parse_search_term(term, force_full=False):
     # decode the term so we aren't dealing with weird encoded characters
     if force_full == False:
         term = urllib.unquote(term)
-    # setup lexer, parse our term, and define operators
-    sh = shlex.shlex(term.strip())
-    sh.wordchars += '!@#$%^&*()-_=+[]{}|\:;<,>.?/~`'
-    sh.commenters = ''
-    parsed = list(iter(sh.get_token, ''))
-    operators = ['regex', 'full', 'type', 'field']
+
     search = {}
+
+    # setup lexer, parse our term, and define operators
+    try:
+        sh = shlex.shlex(term.strip())
+        sh.wordchars += '!@#$%^&*()-_=+[]{}|\:;<,>.?/~`'
+        sh.commenters = ''
+        parsed = list(iter(sh.get_token, ''))
+    except Exception as e:
+        search['query'] = {'error': str(e)}
+        return search
+
+    operators = ['regex', 'full', 'type', 'field']
 
     # for each parsed term, check to see if we have an operator and a value
     regex_term = ""
@@ -1412,7 +1453,6 @@ def gen_global_query(obj,user,term,search_type="global",force_full=False):
 
     sample_queries = {
         'size' : {'size': search_query},
-        'backdoor': {'backdoor.name': search_query},
         'md5hash': {'md5': search_query},
         'sha1hash': {'sha1': search_query},
         'ssdeephash': {'ssdeep': search_query},
@@ -1422,7 +1462,6 @@ def gen_global_query(obj,user,term,search_type="global",force_full=False):
             {'filename': search_query},
             {'filenames': search_query},
         ]},
-        'exploit': {'exploit.cve': search_query},
         'campaign': {'campaign.name': search_query},
         # slightly slow in larger collections
         'object_value': {'objects.value': search_query},
@@ -1460,7 +1499,6 @@ def gen_global_query(obj,user,term,search_type="global",force_full=False):
         query = {'comment': search_query}
     elif search_type == "global":
         if type_ == "Sample":
-            search_list.append(sample_queries["backdoor"])
             search_list.append(sample_queries["object_value"])
             search_list.append(sample_queries["filename"])
             if len(term) == 32:
@@ -1534,6 +1572,12 @@ def gen_global_query(obj,user,term,search_type="global",force_full=False):
             search_list = [
                     {'description': search_query},
                     {'tags': search_query},
+                ]
+        elif type_ == "Target":
+            search_list = [
+                    {'email_address': search_query},
+                    {'firstname': search_query},
+                    {'lastname': search_query},
                 ]
         else:
             search_list = [{'name': search_query}]
@@ -2009,11 +2053,6 @@ def jtable_ajax_list(col_obj,url,urlfieldparam,request,excludes=[],includes=[],q
                                                           "%Y-%m-%d %H:%M:%S")
                 if key == "password_reset":
                     doc['password_reset'] = None
-                if key == "exploit":
-                    exploits = []
-                    for ex in value:
-                        exploits.append(ex['cve'])
-                    doc[key] = "|||".join(exploits)
                 if key == "campaign":
                     camps = []
                     for campdict in value:
@@ -2048,8 +2087,7 @@ def jtable_ajax_list(col_obj,url,urlfieldparam,request,excludes=[],includes=[],q
                             doc[key] = ",".join(value)
                     else:
                         doc[key] = ""
-                if key != urlfieldparam:
-                    doc[key] = html_escape(doc[key])
+                doc[key] = html_escape(doc[key])
             if col_obj._meta['crits_type'] == "Comment":
                 mapper = {
                     "Actor": 'crits.actors.views.actor_detail',
@@ -2066,9 +2104,6 @@ def jtable_ajax_list(col_obj,url,urlfieldparam,request,excludes=[],includes=[],q
                 }
                 doc['url'] = reverse(mapper[doc['obj_type']],
                                     args=(doc['url_key'],))
-            elif col_obj._meta['crits_type'] == "Backdoor" and url:
-                doc['url'] = "{0}?q={1}&search_type=backdoor&force_full=1".format(
-                    reverse(url), doc['name'])
             elif col_obj._meta['crits_type'] == "AuditLog":
                 if doc.get('method', 'delete()') != 'delete()':
                     doc['url'] = details_from_id(doc['type'],
@@ -2204,6 +2239,7 @@ def build_jtable(jtopts, request):
         "isodate":"'8%'",
         "id":"'4%'",
         "favorite":"'4%'",
+        "actions":"'4%'",
         "size":"'4%'",
         "added":"'8%'",
         "created":"'8%'",
@@ -2283,6 +2319,8 @@ def build_jtable(jtopts, request):
             fdict['display'] = """function (data) { return '<div class="icon-container"><span id="'+data.record.id+'" class="id_copy ui-icon ui-icon-copy"></span></div>';}"""
         if field == "favorite":
             fdict['display'] = """function (data) { return '<div class="icon-container"><span id="'+data.record.id+'" class="favorites_icon_jtable ui-icon ui-icon-star"></span></div>';}"""
+        if field == "actions":
+            fdict['display'] = """function (data) { return '<div class="icon-container"><span data-id="'+data.record.id+'" id="'+data.record.id+'" class="preferred_actions_jtable ui-icon ui-icon-heart"></span></div>';}"""
         if field == "thumb":
             fdict['display'] = """function (data) { return '<img src="%s'+data.record.id+'/thumb/" />';}""" % reverse('crits.screenshots.views.render_screenshot')
         if field == "description" and jtable['title'] == "Screenshots":
@@ -2351,36 +2389,15 @@ def generate_items_jtable(request, itype, option):
     if itype == 'ActorThreatIdentifier':
         fields = ['name', 'active', 'id']
         click = "function () {window.parent.$('#actor_identifier_type_add').click();}"
-    elif itype == 'ActorThreatType':
-        fields = ['name', 'active', 'id']
-    elif itype == 'ActorMotivation':
-        fields = ['name', 'active', 'id']
-    elif itype == 'ActorSophistication':
-        fields = ['name', 'active', 'id']
-    elif itype == 'ActorIntendedEffect':
-        fields = ['name', 'active', 'id']
-    elif itype == 'Backdoor':
-        fields = ['name', 'sample_count', 'active', 'id']
-        click = "function () {window.parent.$('#backdoor_add').click();}"
     elif itype == 'Campaign':
         fields = ['name', 'description', 'active', 'id']
         click = "function () {window.parent.$('#new-campaign').click();}"
-    elif itype == 'EventType':
-        fields = ['name', 'active', 'id']
-    elif itype == 'Exploit':
-        fields = ['name', 'active', 'id']
-        click = "function () {window.parent.$('#exploit_add').click();}"
     elif itype == 'IndicatorAction':
-        fields = ['name', 'active', 'id']
+        fields = ['name', 'active', 'preferred', 'id']
         click = "function () {window.parent.$('#indicator_action_add').click();}"
-    elif itype == 'ObjectType':
-        fields = ['name', 'name_type', 'object_type', 'datatype', 'description',
-                  'active', 'id']
     elif itype == 'RawDataType':
         fields = ['name', 'active', 'id']
         click = "function () {window.parent.$('#raw_data_type_add').click();}"
-    elif itype == 'RelationshipType':
-        fields = ['forward', 'reverse', 'description', 'active', 'id']
     elif itype == 'SourceAccess':
         fields = ['name', 'active', 'id']
         click = "function () {window.parent.$('#source_create').click();}"
@@ -2396,10 +2413,6 @@ def generate_items_jtable(request, itype, option):
         return HttpResponse(json.dumps(response, default=json_handler),
                             content_type="application/json")
 
-    if itype == "ObjectType":
-        fields = ['name', 'name_type', 'type', 'datatype', 'description',
-                  'active', 'id']
-
     jtopts = {
         'title': "%ss" % itype,
         'default_sort': 'name ASC',
@@ -2413,16 +2426,13 @@ def generate_items_jtable(request, itype, option):
         'details_link': '',
     }
     jtable = build_jtable(jtopts, request)
-    if itype not in ('ActorThreatType', 'ActorMotivation',
-                     'ActorSophistication', 'ActorIntendedEffect',
-                     'EventType', 'ObjectType', 'RelationshipType'):
-        jtable['toolbar'] = [
-            {
-                'tooltip': "'Add %s'" % itype,
-                'text': "'Add %s'" % itype,
-                'click': click,
-            },
-        ]
+    jtable['toolbar'] = [
+        {
+            'tooltip': "'Add %s'" % itype,
+            'text': "'Add %s'" % itype,
+            'click': click,
+        },
+    ]
 
     for field in jtable['fields']:
         if field['fieldname'].startswith("'active"):
@@ -2430,6 +2440,11 @@ def generate_items_jtable(request, itype, option):
             return '<a id="is_active_' + data.record.id + '" href="#" onclick=\\'javascript:toggleItemActive("%s","'+data.record.id+'");\\'>' + data.record.active + '</a>';
             }
             """ % itype
+        if field['fieldname'].startswith("'name"):
+            field['display'] = """ function (data) {
+            return '<a href="#" onclick=\\'javascript:editAction("'+data.record.name+'");\\'>' + data.record.name + '</a>';
+            }
+            """
     if option == "inline":
         return render_to_response("jtable.html",
                                   {'jtable': jtable,
@@ -2727,7 +2742,7 @@ def generate_user_profile(username, request):
     for sample in sample_md5s:
         md5s.append(sample.value.split(" ")[0])
     filter_data = ('md5', 'source', 'filename', 'mimetype',
-                   'size', 'campaign', 'backdoor', 'exploit')
+                   'size', 'campaign')
     sample_list = (Sample.objects(md5__in=md5s)
                    .only(*filter_data)
                    .sanitize_sources(username))
@@ -2753,7 +2768,7 @@ def generate_user_profile(username, request):
     if 'PCAP' in subscriptions:
         subscription_count += len(subscriptions['PCAP'])
         final_pcaps = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['PCAP']]
+        ids = [ObjectId(p['_id']) for p in subscriptions['PCAP']]
         pcaps = PCAP.objects(id__in=ids).only('md5', 'filename')
         m = map(itemgetter('_id'), subscriptions['PCAP'])
         for pcap in pcaps:
@@ -2766,7 +2781,7 @@ def generate_user_profile(username, request):
     if 'Email' in subscriptions:
         subscription_count += len(subscriptions['Email'])
         final_emails = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['Email']]
+        ids = [ObjectId(e['_id']) for e in subscriptions['Email']]
         emails = Email.objects(id__in=ids).only('from_address',
                                                 'sender',
                                                 'subject')
@@ -2781,7 +2796,7 @@ def generate_user_profile(username, request):
     if 'Indicator' in subscriptions:
         subscription_count += len(subscriptions['Indicator'])
         final_indicators = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['Indicator']]
+        ids = [ObjectId(i['_id']) for i in subscriptions['Indicator']]
         indicators = Indicator.objects(id__in=ids).only('value', 'ind_type')
         m = map(itemgetter('_id'), subscriptions['Indicator'])
         for indicator in indicators:
@@ -2794,7 +2809,7 @@ def generate_user_profile(username, request):
     if 'Event' in subscriptions:
         subscription_count += len(subscriptions['Event'])
         final_events = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['Event']]
+        ids = [ObjectId(v['_id']) for v in subscriptions['Event']]
         events = Event.objects(id__in=ids).only('title', 'description')
         m = map(itemgetter('_id'), subscriptions['Event'])
         for event in events:
@@ -2807,7 +2822,7 @@ def generate_user_profile(username, request):
     if 'Domain' in subscriptions:
         subscription_count += len(subscriptions['Domain'])
         final_domains = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['Domain']]
+        ids = [ObjectId(d['_id']) for d in subscriptions['Domain']]
         domains = Domain.objects(id__in=ids).only('domain')
         m = map(itemgetter('_id'), subscriptions['Domain'])
         for domain in domains:
@@ -2820,7 +2835,7 @@ def generate_user_profile(username, request):
     if 'IP' in subscriptions:
         subscription_count += len(subscriptions['IP'])
         final_ips = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['IP']]
+        ids = [ObjectId(a['_id']) for a in subscriptions['IP']]
         ips = IP.objects(id__in=ids).only('ip')
         m = map(itemgetter('_id'), subscriptions['IP'])
         for ip in ips:
@@ -2833,7 +2848,7 @@ def generate_user_profile(username, request):
     if 'Campaign' in subscriptions:
         subscription_count += len(subscriptions['Campaign'])
         final_campaigns = []
-        ids = [ObjectId(s['_id']) for s in subscriptions['Campaign']]
+        ids = [ObjectId(c['_id']) for c in subscriptions['Campaign']]
         campaigns = Campaign.objects(id__in=ids).only('name')
         m = map(itemgetter('_id'), subscriptions['Campaign'])
         for campaign in campaigns:
@@ -2848,7 +2863,7 @@ def generate_user_profile(username, request):
     collected_favorites = {}
     total_favorites = 0
     for type_ in favorites.keys():
-        ids = [ObjectId(i) for i in favorites[type_]]
+        ids = [ObjectId(f) for f in favorites[type_]]
         if ids:
             count = class_from_type(type_).objects(id__in=ids).count()
         else:
@@ -3248,11 +3263,13 @@ def generate_global_search(request):
     if ObjectId.is_valid(searchtext):
         for obj_type, url, key in [
                 ['Actor', 'crits.actors.views.actor_detail', 'id'],
+                ['Backdoor', 'crits.backdoors.views.backdoor_detail', 'id'],
                 ['Campaign', 'crits.campaigns.views.campaign_details', 'name'],
                 ['Certificate', 'crits.certificates.views.certificate_details', 'md5'],
                 ['Domain', 'crits.domains.views.domain_detail', 'domain'],
                 ['Email', 'crits.emails.views.email_detail', 'id'],
                 ['Event', 'crits.events.views.view_event', 'id'],
+                ['Exploit', 'crits.exploits.views.exploit_detail', 'id'],
                 ['Indicator', 'crits.indicators.views.indicator', 'id'],
                 ['IP', 'crits.ips.views.ip_detail', 'ip'],
                 ['PCAP', 'crits.pcaps.views.pcap_details', 'md5'],
@@ -3270,12 +3287,14 @@ def generate_global_search(request):
     for col_obj,url in [
                     [Actor, "crits.actors.views.actors_listing"],
                     [AnalysisResult, "crits.services.views.analysis_results_listing"],
+                    [Backdoor, "crits.backdoors.views.backdoors_listing"],
                     [Campaign, "crits.campaigns.views.campaigns_listing"],
                     [Certificate, "crits.certificates.views.certificates_listing"],
                     [Comment, "crits.comments.views.comments_listing"],
                     [Domain, "crits.domains.views.domains_listing"],
                     [Email, "crits.emails.views.emails_listing"],
                     [Event, "crits.events.views.events_listing"],
+                    [Exploit, "crits.exploits.views.exploits_listing"],
                     [Indicator,"crits.indicators.views.indicators_listing"],
                     [IP, "crits.ips.views.ips_listing"],
                     [PCAP, "crits.pcaps.views.pcaps_listing"],
@@ -3464,11 +3483,13 @@ def details_from_id(type_, id_):
     """
 
     type_map = {'Actor': 'crits.actors.views.actor_detail',
+                'Backdoor': 'crits.backdoors.views.backdoor_detail',
                 'Campaign': 'crits.campaigns.views.campaign_details',
                 'Certificate': 'crits.certificates.views.certificate_details',
                 'Domain': 'crits.domains.views.domain_detail',
                 'Email': 'crits.emails.views.email_detail',
                 'Event': 'crits.events.views.view_event',
+                'Exploit': 'crits.exploits.views.exploit_detail',
                 'Indicator': 'crits.indicators.views.indicator',
                 'IP': 'crits.ips.views.ip_detail',
                 'PCAP': 'crits.pcaps.views.pcap_details',
@@ -3768,11 +3789,13 @@ def generate_sector_jtable(request, option):
                                     request,
                                     includes=['name',
                                               'Actor',
+                                              'Backdoor',
                                               'Campaign',
                                               'Certificate',
                                               'Domain',
                                               'Email',
                                               'Event',
+                                              'Exploit',
                                               'Indicator',
                                               'IP',
                                               'PCAP',
@@ -3782,8 +3805,9 @@ def generate_sector_jtable(request, option):
         return HttpResponse(json.dumps(response, default=json_handler),
                             content_type='application/json')
 
-    fields = ['name', 'Actor', 'Campaign', 'Certificate', 'Domain', 'Email',
-              'Event', 'Indicator', 'IP', 'PCAP', 'RawData', 'Sample', 'Target']
+    fields = ['name', 'Actor', 'Backdoor', 'Campaign', 'Certificate', 'Domain',
+              'Email', 'Event', 'Exploit', 'Indicator', 'IP', 'PCAP', 'RawData',
+              'Sample', 'Target']
     jtopts = {'title': 'Sectors',
               'fields': fields,
               'listurl': 'jtlist',
@@ -3809,12 +3833,12 @@ def generate_sector_jtable(request, option):
             if field['fieldname'].startswith("'" + ctype):
                 if ctype == 'name':
                     field['display'] = """ function (data) {
-                    return '<a href="%s&q='+data.record.name+'">' + data.record.name + '</a>';
+                    return '<a href="%s&q='+encodeURIComponent(data.record.name)+'">' + data.record.name + '</a>';
                     }
                     """ % url
                 else:
                     field['display'] = """ function (data) {
-                    return '<a href="%s?sectors='+data.record.name+'">'+data.record.%s+'</a>';
+                    return '<a href="%s?sectors='+encodeURIComponent(data.record.name)+'">'+data.record.%s+'</a>';
                     }
                     """ % (url, ctype)
     return render_to_response('sector_lists.html',
@@ -3846,18 +3870,6 @@ def modify_sector_list(itype, oid, sectors, analyst):
     except ValidationError:
         pass
 
-def get_sector_options():
-    """
-    Get available sector options.
-
-    :returns: list
-    """
-
-    sectors = SectorObject.objects()
-    sector_list = [s.name for s in sectors]
-    return HttpResponse(json.dumps(sector_list, default=json_handler),
-                        content_type='application/json')
-
 def get_bucket_autocomplete(term):
     """
     Get existing buckets to autocomplete.
@@ -3871,3 +3883,28 @@ def get_bucket_autocomplete(term):
     buckets = [b.name for b in results]
     return HttpResponse(json.dumps(buckets, default=json_handler),
                         content_type='application/json')
+
+def add_new_action(action, preferred, analyst):
+    """
+    Add a new action to CRITs.
+
+    :param action: The action to add to CRITs.
+    :type action: str
+    :param preferred: The TLOs this is preferred for.
+    :type preferred: list
+    :param analyst: The user adding this action.
+    :returns: True, False
+    """
+
+    action = action.strip()
+    idb_action = IndicatorAction.objects(name=action).first()
+    if not idb_action:
+        idb_action = IndicatorAction()
+    idb_action.name = action
+    idb_action.preferred = preferred
+    try:
+        idb_action.save(username=analyst)
+    except ValidationError:
+        return False
+
+    return True

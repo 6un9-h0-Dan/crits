@@ -3,6 +3,154 @@ should be aware of. This will also include things like dependency changes or
 references to changes in other repositories. Updates are sorted by commit date
 descending.
 
+Author: frbapolkosnik
+Date: 2015-08-31
+
+    Unzip functionality was set up to use the 7za rather than 7z. 7z suports
+    much wider variety of formats. The defaults are changed for new installs,
+    for existing installs just change the filename from  7za to 7z in 
+    CRITs Control Panel -> SYSTEM -> General -> "Zip7 path:".
+    7z comes with p7zip-plugins on RHEL/Centos, on Ubuntu it's in p7zip-full.
+
+Author: mgoffin
+Date: 2015-06-30
+
+    CybOX and STIX have been completely removed from core. There was too much
+    arguing and back-and-forth between the pro-standards and anti-standards
+    community members for it to stay as it is. Half of the people didn't want to
+    be forced to use them at all while the other half was not satisfied at the
+    level of feature parity and compatibility CRITs had with the standards.
+
+    The compromise that we came up with is to move any and all features that
+    involved CybOX/STIX over to the TAXII Service. That way if you use core you
+    are not required to interact or use the standards, but if you do want them
+    you can leverage the import/export capabilities via an optional service.
+
+    The following changes have taken place:
+
+        - CRITs has its own set of vocabularies for things like Event Type,
+          Relationships, Objects, Indicators, Actors, etc. Some of the values
+          might be the same, similar, or different than what was there before
+          depending on if those values made sense.
+            - We are not migrating old values and leaving the mapping of old
+              values to new ones up to organizations to handle. Due to the
+              confusion of what some of the old CybOX/STIX values meant, some
+              people used them in different ways and we didn't want to make
+              assumptions.
+        - STIX Import is gone and now a part of the TAXII Service. If you use
+          the TAXII service it can be found in the Nav Menu under "Services".
+        - Exporting a TLO in STIX format requires the TAXII Service's "Preview"
+          feature.
+        - The "Standards" API is gone but will work again if you include the
+          TAXII Service which extends the API.
+        - The TAXII Service has a new set of mappings to go from
+          CRITs->Standards->CRITs for the new vocabularies. It is less robust
+          than before but we are leaving it this way so people can submit PRs
+          for expanded support.
+        - Downloading a TLO no longer provides a STIX option. It is now
+          JSON-based.
+        - If you wish to upload a file as an Object, use the "File Upload"
+          Object Type.
+        - Indicators now have a "Threat Type" and "Attack Type" to provide more
+          context into what the Indicator means.
+        - The UI will now prevent you from trying to create an Indicator out of
+          an existing Object if there is no matching Indicator Type.
+        - If you had custom vocabulary additions before, we no longer use the
+          database to query for vocabulary values. They are now located in the
+          "vocabulary" directory of the project. You can add your vocabulary
+          items there as necessary and handle merge conflicts if needed.
+
+    This separation should put CRITs in the right position. We want to keep
+    CRITs as a collaborative analyst environment, not a sharing platform. If you
+    want to share by extending it with services that's excellent! CybOX and STIX
+    support can be expanded upon and rev'd more frequently in the TAXII Service
+    so people don't have to wait for new CRITs releases to get access to newer
+    versions of the standards. The core developers don't use the standards so
+    they are looking to the community to contribute enhancements to CybOX/STIX
+    support in the TAXII Service if it is something they need/want.
+
+    Here an examples of a query you can perform to update the values in
+    your database to align with the new vocabulary:
+
+    db.indicators.update({'type': 'Address - ipv4-addr'}, {$set: {'type': 'IPv4
+    Address'}}, {'multi': 1})
+
+
+Author: brlogan
+Date: 2015-05-07
+
+    Added support for sharing String Indicators via STIX. Because there is no
+    generic String type in CybOX, the CybOX Custom object must be used. This
+    requries updating python-stix and python-cybox.
+
+    Updated versions are:
+        cybox-2.1.0.11
+        stix-1.1.1.5
+
+Author: wxs
+Date:   2015-05-06
+
+    The add_relationship() function has been changed. If you have any place
+    using it with the rel_id and type_ arguments you need to change to pass
+    in rel_item. For more details please see this commit:
+
+    e9f0a6e545ec18e8f951b4709aab8fd06b973537
+
+Author: wxs
+Date:   2015-05-06
+
+    Backdoor and Exploit TLOs have been added to CRITs. This provides for
+    better tracking of TTPs over time. The old "exploits" collection will need
+    to be removed first by running the following from a mongo shell:
+
+    db.exploits.drop()
+
+    If you have existing samples with backdoor or exploit information you can
+    migrate these to new objects in the new collections using:
+
+    python manage.py upgrade -S
+
+    The above will create new objects in the collections for each exploit and
+    backdoor attribute of a Sample, and relate the Sample to them. It will also
+    create indexes for the new "backdoors" and "exploits" collection.
+
+    Finally, you can drop the backdoor_details and exploit_details collections
+    by running the following from a mongo shell:
+
+    db.backdoor_details.drop()
+    db.exploit_details.drop()
+
+Author: mgoffin
+Date:   2015-04-28
+
+    Locations has been added to CRITs. This is a new feature for each TLO.
+    Locations allows you to track where a TLO has been seen originating from as
+    well as destined to. Uniqueness of a location entry is based on a
+    combination of its type, location, and date of entry. This allows you to
+    have multiple instances of originating from the same place. Each location
+    comes with an optional description as well as optional lat/long.
+
+    In order for this to work you will need to populate your system with
+    locations to choose. Locations are based on country/territory. You can add
+    them by running the following:
+
+        python manage.py create_locations
+
+Author: frbapolkosnik
+Date:   2015-04-17
+
+    Bundled version of OleFileIO_PL has been removed and replaced with
+    system-installed olefile >= 0.40. In order to get it working one needs to
+    install olefile module by either building it and installing from
+    source (https://pypi.python.org/pypi/olefile) download the zip, unzip, cd
+    to the extracted folder and run:
+
+        python setup build & sudo python setup.py install
+
+    or through pip:
+
+        pip install olefile
+
 Author: wxs
 Date:   2015-01-17
 

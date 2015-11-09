@@ -29,7 +29,6 @@ class Command(BaseCommand):
         imports = [ 'anyjson',
                    'bson',
                    'crits',
-                   'cybox',
                    'dateutil',
                    'gridfs',
                    'importlib',
@@ -39,12 +38,9 @@ class Command(BaseCommand):
                    'mongoengine',
                    'nids',
                    'pymongo',
-                   'pefile',
                    'pydeep',
-                   'pydot',
                    'pyparsing',
                    'requests',
-                   'stix',
                    'yaml',
                    ]
 
@@ -63,7 +59,7 @@ class Command(BaseCommand):
             sys.exit(1)
 
         # Check for binaries
-        binaries = ['7za',
+        binaries = ['7z',
                     'mongod',
                     'mongos',
                     'unrar',

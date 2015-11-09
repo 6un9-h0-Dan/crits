@@ -1,6 +1,3 @@
-import re
-
-from datetime import datetime
 from django.conf import settings
 from django import forms
 from django.forms.util import ErrorList
@@ -9,11 +6,12 @@ from crits.campaigns.campaign import Campaign
 from crits.core import form_consts
 from crits.core.forms import add_bucketlist_to_form, add_ticket_to_form
 from crits.core.widgets import CalWidget
-from crits.core.handlers import get_source_names, get_item_names, get_object_types
+from crits.core.handlers import get_source_names, get_item_names
 from crits.core.user_tools import get_user_organization
-from crits.domains.domain import Domain
 
-ip_choices = [(c[0], c[0]) for c in get_object_types(active=False, query={'type':'Address', 'name':{'$in':['cidr', re.compile('^ipv')]}})]
+from crits.vocabulary.ips import IPTypes
+
+ip_choices = [(c,c) for c in IPTypes.values(sort=True)]
 
 class TLDUpdateForm(forms.Form):
     """
@@ -47,11 +45,11 @@ class AddDomainForm(forms.Form):
     add_ip = forms.BooleanField(required=False,
                                 widget=forms.CheckboxInput(attrs={'class':'bulkskip'}),
                                 label=form_consts.Domain.ADD_IP_ADDRESS)
-    ip = forms.GenericIPAddressField(required=False,
-                                     label=form_consts.Domain.IP_ADDRESS,
-                                     widget=forms.TextInput(attrs={'class': 'togglewithip bulkrequired'}))
+    ip = forms.CharField(required=False,
+                         label=form_consts.Domain.IP_ADDRESS,
+                         widget=forms.TextInput(attrs={'class': 'togglewithip bulkrequired'}))
     ip_type = forms.ChoiceField(required=False,
-                                label=form_consts.IP.IP_TYPE,
+                                label=form_consts.Domain.IP_TYPE,
                                 widget=forms.Select(attrs={'class':'togglewithip bulkrequired bulknoinitial'}),)
     created = forms.DateTimeField(widget=CalWidget(format=settings.PY_DATETIME_FORMAT,
                                                    attrs={'class':'datetimeclass togglewithip bulkrequired',
@@ -75,7 +73,7 @@ class AddDomainForm(forms.Form):
                                    label=form_consts.Domain.IP_REFERENCE)
     add_indicators = forms.BooleanField(required=False,
                                         widget=forms.CheckboxInput(attrs={'class':'bulkskip'}),
-                                        label=form_consts.Domain.ADD_INDICATOR)
+                                        label=form_consts.Domain.ADD_INDICATORS)
 
     def __init__(self, username, *args, **kwargs):
         super(AddDomainForm, self).__init__(*args, **kwargs)

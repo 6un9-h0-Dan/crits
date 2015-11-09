@@ -6,6 +6,8 @@ from dateutil.parser import parse
 from django.http import HttpResponse
 from lxml.etree import tostring
 
+from django.core.urlresolvers import resolve, get_script_prefix
+
 from tastypie.exceptions import BadRequest, ImmediateHttpResponse
 from tastypie.serializers import Serializer
 from tastypie.authentication import SessionAuthentication, ApiKeyAuthentication
@@ -13,8 +15,7 @@ from tastypie.utils.mime import build_content_type
 from tastypie_mongoengine.resources import MongoEngineResource
 
 from crits.core.data_tools import format_file, create_zip
-from crits.core.handlers import download_object_handler, remove_quotes, generate_regex
-from crits.core.source_access import SourceAccess
+from crits.core.handlers import remove_quotes, generate_regex
 from crits.core.user_tools import user_sources
 
 
@@ -101,12 +102,11 @@ class CRITsSerializer(Serializer):
     Custom serializer for CRITs.
     """
 
-    formats = ['json', 'xml', 'yaml', 'stix', 'file']
+    formats = ['json', 'xml', 'yaml', 'file']
     content_types = {
         'json': 'application/json',
         'xml': 'application/xml',
         'yaml': 'text/yaml',
-        'stix': 'application/stix+xml',
         'file': 'application/octet-stream',
     }
 
@@ -258,78 +258,6 @@ class CRITsSerializer(Serializer):
 
         data = self._convert_mongoengine(data, options)
         return yaml.dump(data)
-
-    def to_stix(self, data, options=None):
-        """
-        Respond with STIX formatted data.
-
-        :param data: The data to be worked on.
-        :type data: dict for multiple objects,
-                    :class:`tastypie.bundle.Bundle` for a single object.
-        :param options: Options to alter how this serializer works.
-        :type options: dict
-        :returns: str
-        """
-
-        options = options or {}
-        get_binaries = 'stix_no_bin'
-        bin_fmt = 'raw'
-        if 'binaries' in options:
-            try:
-                if int(options['binaries']):
-                    get_binaries = 'stix'
-                    bin_fmt = 'base64'
-            except:
-                pass
-
-        # This is bad.
-        # Should probably find a better way to determine the user
-        # who is making this API call. However, the data to
-        # convert is already queried by the API using the user's
-        # source access list, so technically we should not be
-        # looping through any data the user isn't supposed to see,
-        # so this sources list is just a formality to get
-        # download_object_handler() to do what we want.
-        sources = [s.name for s in SourceAccess.objects()]
-
-        if hasattr(data, 'obj'):
-            objects = [(data.obj._meta['crits_type'],
-                       data.obj.id)]
-            object_types = [objects[0][0]]
-        elif 'objects' in data:
-            try:
-                objects = []
-                object_types = []
-                objs = data['objects']
-                data['objects'] = []
-                for obj_ in objs:
-                    objects.append((obj_.obj._meta['crits_type'],
-                                    obj_.obj.id))
-                    object_types.append(obj_.obj._meta['crits_type'])
-            except Exception:
-                return ""
-        else:
-            return ""
-
-        try:
-            # Constants are here to make sure:
-            # 1: total limit of objects to return
-            # 0: depth limit - only want this object
-            # 0: relationship limit - don't get relationships
-            data = download_object_handler(1,
-                                           0,
-                                           0,
-                                           get_binaries,
-                                           bin_fmt,
-                                           object_types,
-                                           objects,
-                                           sources,
-                                           False)
-        except Exception:
-            data = ""
-        if 'data' in data:
-            data = data['data']
-        return data
 
     def _convert_mongoengine(self, data, options=None):
         """
@@ -582,7 +510,7 @@ class CRITsAPIResource(MongoEngineResource):
         if no_sources and sources:
             querydict['source.name'] = {'$in': source_list}
         if only or exclude:
-            required = [k for k,v in klass._fields.iteritems() if v.required]
+            required = [k for k,f in klass._fields.iteritems() if f.required]
         if only:
             fields = only.split(',')
             if exclude:
@@ -634,7 +562,99 @@ class CRITsAPIResource(MongoEngineResource):
         :returns: NotImplementedError if the resource doesn't override.
         """
 
-        raise NotImplementedError('You cannot currently update this object through the API.')
+        import crits.actors.handlers as ah
+        import crits.core.handlers as coreh
+        import crits.objects.handlers as objh
+        import crits.relationships.handlers as relh
+        import crits.services.handlers as servh
+
+        actions = {
+            'Common': {
+                'add_object': objh.add_object,
+                'add_releasability': coreh.add_releasability,
+                'forge_relationship': relh.forge_relationship,
+                'run_service': servh.run_service,
+            },
+            'Actor': {
+                'update_actor_tags': ah.update_actor_tags,
+                'attribute_actor_identifier': ah.attribute_actor_identifier,
+                'set_identifier_confidence': ah.set_identifier_confidence,
+                'remove_attribution': ah.remove_attribution,
+                'set_actor_name': ah.set_actor_name,
+                'update_actor_aliases': ah.update_actor_aliases,
+            },
+            'Backdoor': {},
+            'Campaign': {},
+            'Certificate': {},
+            'Domain': {},
+            'Email': {},
+            'Event': {},
+            'Exploit': {},
+            'Indicator': {},
+            'IP': {},
+            'PCAP': {},
+            'RawData': {},
+            'Sample': {},
+            'Target': {},
+        }
+
+        prefix = get_script_prefix()
+        uri = bundle.request.path
+        if prefix and uri.startswith(prefix):
+            uri = uri[len(prefix)-1:]
+        view, args, kwargs = resolve(uri)
+
+        type_ = kwargs['resource_name'].title()
+        if type_ == "Raw_data":
+            type_ = "RawData"
+        if type_[-1] == 's':
+            type_ = type_[:-1]
+        if type_ in ("Pcap", "Ip"):
+            type_ = type_.upper()
+        id_ = kwargs['pk']
+
+        content = {'return_code': 0,
+                   'type': type_,
+                   'message': '',
+                   'id': id_}
+
+        # Make sure we have an appropriate action.
+        action = bundle.data.get("action", None)
+        atype = actions.get(type_, None)
+        if atype is None:
+            content['return_code'] = 1
+            content['message'] = "'%s' is not a valid resource." % type_
+            self.crits_response(content)
+        action_type = atype.get(action, None)
+        if action_type is None:
+            atype = actions.get('Common')
+            action_type = atype.get(action, None)
+        if action_type:
+            data = bundle.data
+            # Requests don't need to have an id_ as we will derive it from
+            # the request URL. Override id_ if the request provided one.
+            data['id_'] = id_
+            # Override type (if provided)
+            data['type_'] = type_
+            # Override user (if provided) with the one who made the request.
+            data['user'] = bundle.request.user.username
+            try:
+                results = action_type(**data)
+                if not results.get('success', False):
+                    content['return_code'] = 1
+                    # TODO: Some messages contain HTML and other such content
+                    # that we shouldn't be returning here.
+                    message = results.get('message', None)
+                    content['message'] = message
+                else:
+                    content['message'] = "success!"
+            except Exception, e:
+                content['return_code'] = 1
+                content['message'] = str(e)
+        else:
+            content['return_code'] = 1
+            content['message'] = "'%s' is not a valid action." % action
+        self.crits_response(content)
 
     def obj_delete_list(self, bundle, **kwargs):
         """

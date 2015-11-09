@@ -9,14 +9,17 @@ urlpatterns = patterns('',
     (r'^', include('crits.core.urls')),                        # Core
     (r'^dashboards/', include('crits.dashboards.urls')),       # Dashboard
     (r'^actors/', include('crits.actors.urls')),               # Actors
+    (r'^backdoors/', include('crits.backdoors.urls')),         # Backdoors
     (r'^campaigns/', include('crits.campaigns.urls')),         # Campaigns
     (r'^certificates/', include('crits.certificates.urls')),   # Certificates
     (r'^comments/', include('crits.comments.urls')),           # Comments
     (r'^domains/', include('crits.domains.urls')),             # Domains
     (r'^emails/', include('crits.emails.urls')),               # Emails
     (r'^events/', include('crits.events.urls')),               # Events
+    (r'^exploits/', include('crits.exploits.urls')),           # Exploits
     (r'^indicators/', include('crits.indicators.urls')),       # Indicators
     (r'^ips/', include('crits.ips.urls')),                     # IPs
+    (r'^locations/', include('crits.locations.urls')),         # Locations
     (r'^notifications/', include('crits.notifications.urls')), # Notifications
     (r'^objects/', include('crits.objects.urls')),             # Objects
     (r'^pcaps/', include('crits.pcaps.urls')),                 # PCAPs
@@ -25,7 +28,6 @@ urlpatterns = patterns('',
     (r'^samples/', include('crits.samples.urls')),             # Samples
     (r'^screenshots/', include('crits.screenshots.urls')),     # Screenshots
     (r'^services/', include('crits.services.urls')),           # Services
-    (r'^standards/', include('crits.standards.urls')),         # Standards
     (r'^targets/', include('crits.targets.urls')),             # Targets
 )
 
@@ -39,45 +41,43 @@ handler400 = 'crits.core.errors.custom_400'
 if settings.ENABLE_API:
     from tastypie.api import Api
     from crits.actors.api import ActorResource, ActorIdentifierResource
+    from crits.backdoors.api import BackdoorResource
     from crits.campaigns.api import CampaignResource
     from crits.certificates.api import CertificateResource
     from crits.comments.api import CommentResource
     from crits.domains.api import DomainResource
     from crits.emails.api import EmailResource
     from crits.events.api import EventResource
+    from crits.exploits.api import ExploitResource
     from crits.indicators.api import IndicatorResource, IndicatorActivityResource
     from crits.ips.api import IPResource
-    from crits.objects.api import ObjectResource
     from crits.pcaps.api import PCAPResource
     from crits.raw_data.api import RawDataResource
-    from crits.relationships.api import RelationshipResource
     from crits.samples.api import SampleResource
     from crits.screenshots.api import ScreenshotResource
     from crits.services.api import ServiceResource
     from crits.targets.api import TargetResource
-    from crits.standards.api import StandardsResource
 
     v1_api = Api(api_name='v1')
     v1_api.register(ActorResource())
     v1_api.register(ActorIdentifierResource())
+    v1_api.register(BackdoorResource())
     v1_api.register(CampaignResource())
     v1_api.register(CertificateResource())
     v1_api.register(CommentResource())
     v1_api.register(DomainResource())
     v1_api.register(EmailResource())
     v1_api.register(EventResource())
+    v1_api.register(ExploitResource())
     v1_api.register(IndicatorResource())
     v1_api.register(IndicatorActivityResource())
     v1_api.register(IPResource())
-    v1_api.register(ObjectResource())
     v1_api.register(PCAPResource())
     v1_api.register(RawDataResource())
-    v1_api.register(RelationshipResource())
     v1_api.register(SampleResource())
     v1_api.register(ScreenshotResource())
     v1_api.register(ServiceResource())
     v1_api.register(TargetResource())
-    v1_api.register(StandardsResource())
 
     for service_directory in settings.SERVICE_DIRS:
         if os.path.isdir(service_directory):

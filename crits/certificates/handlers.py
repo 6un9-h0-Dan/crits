@@ -7,7 +7,6 @@ from django.core.urlresolvers import reverse
 from django.http import HttpResponse
 from django.shortcuts import render_to_response
 from django.template import RequestContext
-from mongoengine.base import ValidationError
 
 from crits.core.class_mapper import class_from_id, class_from_value
 from crits.core.crits_mongoengine import EmbeddedSource
@@ -20,6 +19,8 @@ from crits.certificates.certificate import Certificate
 from crits.notifications.handlers import remove_user_from_notification
 from crits.services.analysis_result import AnalysisResult
 from crits.services.handlers import run_triage, get_supported_services
+
+from crits.vocabulary.relationships import RelationshipTypes
 
 
 def generate_cert_csv(request):
@@ -205,7 +206,7 @@ def generate_cert_jtable(request, option):
 
 def handle_cert_file(filename, data, source_name, user=None,
                      description=None, related_id=None, related_md5=None,
-                     related_type=None, method=None, reference=None,
+                     related_type=None, method='', reference='',
                      relationship=None, bucket_list=None, ticket=None):
     """
     Add a Certificate.
@@ -326,12 +327,11 @@ def handle_cert_file(filename, data, source_name, user=None,
     # update relationship if a related top-level object is supplied
     if related_obj and cert:
         if not relationship:
-            relationship = "Related_To"
-        cert.add_relationship(rel_item=related_obj,
-                              rel_type=relationship,
+            relationship = RelationshipTypes.RELATED_TO
+        cert.add_relationship(related_obj,
+                              relationship,
                               analyst=user,
                               get_rels=False)
-        related_obj.save(username=user)
         cert.save(username=user)
 
     status = {
@@ -343,27 +343,6 @@ def handle_cert_file(filename, data, source_name, user=None,
     }
 
     return status
-
-def update_cert_description(md5, description, analyst):
-    """
-    Update a Certificate description.
-
-    :param md5: The MD5 of the Certificate to update.
-    :type md5: str
-    :param description: The new description.
-    :type description: str
-    :param analyst: The user updating the description.
-    :type analyst: str
-    :returns: None, ValidationError
-    """
-
-    cert = Certificate.objects(md5=md5).first()
-    cert.description = description
-    try:
-        cert.save(username=analyst)
-        return None
-    except ValidationError, e:
-        return e
 
 def delete_cert(md5, username=None):
     """

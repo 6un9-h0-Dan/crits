@@ -1,6 +1,5 @@
 import json
 import uuid
-from HTMLParser import HTMLParser
 
 from django.core.urlresolvers import reverse
 from django.http import HttpResponse
@@ -19,7 +18,7 @@ from crits.core.handlers import jtable_ajax_delete
 from crits.core.handlers import csv_export
 from crits.core.user_tools import is_admin, user_sources, is_user_favorite
 from crits.core.user_tools import is_user_subscribed
-from crits.events.event import Event, EventType
+from crits.events.event import Event
 from crits.notifications.handlers import remove_user_from_notification
 from crits.samples.handlers import handle_uploaded_file, mail_sample
 from crits.services.handlers import run_triage, get_supported_services
@@ -36,24 +35,6 @@ def generate_event_csv(request):
 
     response = csv_export(request,Event)
     return response
-
-def get_event_types(active):
-    """
-    Get a list of available event types.
-
-    :param active: Get only active event types.
-    :type active: bool
-    :returns: list
-    """
-
-    if active:
-        etypes = EventType.objects(active="on")
-    else:
-        etypes = EventType.objects()
-    event_types = []
-    for etype in etypes:
-        event_types.append(etype.name)
-    return event_types
 
 def get_event_details(event_id, analyst):
     """
@@ -332,35 +313,6 @@ def event_remove(_id, username):
         return {'success':True}
     else:
         return {'success':False,'message': 'Need to be admin'}
-
-def update_event_description(event_id, description, analyst):
-    """
-    Update event description.
-
-    :param event_id: The ObjectId of the Event to update.
-    :type event_id: str
-    :param description: The new description.
-    :type description: str
-    :param analyst: The user updating this Event.
-    :type analyst: str
-    :returns: dict with keys "success" (boolean) and "message" (str)
-    """
-
-    if not description:
-        return {'success': False, 'message': "No description to change"}
-    event = Event.objects(id=event_id).first()
-    if not event:
-        return {'success': False, 'message': "No event found"}
-    # Have to unescape the submitted data. Use unescape() to escape
-    # &lt; and friends. Use urllib2.unquote() to escape %3C and friends.
-    h = HTMLParser()
-    description = h.unescape(description)
-    event.description = description
-    try:
-        event.save(username=analyst)
-        return {'success': True}
-    except ValidationError, e:
-        return {'success': False, 'message': e}
 
 def update_event_title(event_id, title, analyst):
     """

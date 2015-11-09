@@ -11,12 +11,14 @@ from django.template import RequestContext
 from crits.core import form_consts
 from crits.core.user_tools import user_can_view_data, user_is_admin
 from crits.events.forms import EventForm
-from crits.events.handlers import event_remove, update_event_description
+from crits.events.handlers import event_remove
 from crits.events.handlers import update_event_title, update_event_type
-from crits.events.handlers import get_event_types, get_event_details
+from crits.events.handlers import get_event_details
 from crits.events.handlers import generate_event_jtable, add_sample_for_event
 from crits.events.handlers import generate_event_csv, add_new_event
 from crits.samples.forms import UploadFileForm
+
+from crits.vocabulary.events import EventTypes
 
 
 @user_passes_test(user_can_view_data)
@@ -60,6 +62,8 @@ def add_event(request):
                                    bucket_list=data[form_consts.Common.BUCKET_LIST_VARIABLE_NAME],
                                    ticket=data[form_consts.Common.TICKET_VARIABLE_NAME],
                                    analyst=request.user.username)
+            if 'object' in result:
+                del result['object']
             return HttpResponse(json.dumps(result), mimetype="application/json")
         else:
             return HttpResponse(json.dumps({'form': event_form.as_table(),
@@ -176,32 +180,6 @@ def remove_event(request, _id):
 
 
 @user_passes_test(user_can_view_data)
-def set_event_description(request, event_id):
-    """
-    Set event description. Should be an AJAX POST.
-
-    :param request: Django request object (Required)
-    :type request: :class:`django.http.HttpRequest`
-    :param event_id: The ObjectId of the event to update.
-    :type event_id: str
-    :returns: :class:`django.http.HttpResponse`
-    """
-
-    if request.method == 'POST':
-        analyst = request.user.username
-        description = request.POST.get('description', None)
-        return HttpResponse(json.dumps(update_event_description(event_id,
-                                                                description,
-                                                                analyst)),
-                            mimetype="application/json")
-    else:
-        error = "Expected POST"
-        return render_to_response("error.html",
-                                  {"error": error},
-                                  RequestContext(request))
-
-
-@user_passes_test(user_can_view_data)
 def set_event_title(request, event_id):
     """
     Set event title. Should be an AJAX POST.
@@ -263,23 +241,13 @@ def get_event_type_dropdown(request):
     :returns: :class:`django.http.HttpResponse`
     """
 
-    if request.method == 'POST':
-        if request.is_ajax():
-            e_types = ""
-            if 'all' in request.POST:
-                e_types = get_event_types(False)
-            else:
-                e_types = get_event_types()
-            result = {'types': e_types}
-            return HttpResponse(json.dumps(result),
-                                mimetype="application/json")
-        else:
-            error = "Expected AJAX"
-            return render_to_response("error.html",
-                                      {"error": error},
-                                      RequestContext(request))
+    if request.is_ajax():
+        e_types = EventTypes.values(sort=True)
+        result = {'types': e_types}
+        return HttpResponse(json.dumps(result),
+                            mimetype="application/json")
     else:
-        error = "Expected POST"
+        error = "Expected AJAX"
         return render_to_response("error.html",
-                                  {"error": error},
-                                  RequestContext(request))
+                                    {"error": error},
+                                    RequestContext(request))
